@@ -1,94 +1,166 @@
 import torch
-import torch.nn as nn
+import tiktoken
+import os
+import requests
+import json
+import numpy as np
+import tensorflow as tf
+from tqdm import tqdm
 from pathlib import Path
 
-def batch_loss(input_batch, target_batch, model, device):
-    input_batch, target_batch = input_batch.to(device), target_batch.to(device)
-    logits = model(input_batch)
-    loss = nn.functional.cross_entropy(logits.flatten(0, 1), target_batch.flatten())
-    return loss
+tokenizer = tiktoken.get_encoding("gpt2")
 
-def loader_loss(dataloader, model, device, num_batch=None):
-    total_loss = 0
-    if len(dataloader) == 0:
-        return float('nan')
-    elif num_batch is None:
-        num_batch = len(dataloader)
-    else:
-        num_batch = min(num_batch, len(dataloader))
+def text_to_ids(text, tokenizer):
+    encoded = tokenizer.encode(text, allowed_special={"<|endoftext|>"})
+    ids = torch.tensor(encoded).unsqueeze(dim=0)
+    return ids
 
-    for i, (input_batch, target_batch) in enumerate(dataloader):
-        if i < num_batch:
-            loss = batch_loss(input_batch, target_batch, model, device)
-            total_loss += loss.item()
-        else:
-            break
+def ids_to_text(ids, tokenizer):
+    ids = ids.squeeze(0)
+    return tokenizer.decode(ids.tolist())
 
-    return total_loss / num_batch
 
-def evaluate_model(model, train_loader, val_loader, device, eval_iter):
+def download_and_load_gpt2(model_size, models_dir):
+    allowed_sizes = ("124M", "355M", "774M", "1558M")
+    if model_size not in allowed_sizes:
+        raise ValueError(f"Model size not in {allowed_sizes}")
+
+    model_dir = os.path.join(models_dir, model_size)
+    base_url = "https://openaipublic.blob.core.windows.net/gpt-2/models"
+    filenames = [
+        "checkpoint", "encoder.json", "hparams.json",
+        "model.ckpt.data-00000-of-00001", "model.ckpt.index",
+        "model.ckpt.meta", "vocab.bpe"
+    ]
+
+    # Download files
+    os.makedirs(model_dir, exist_ok=True)
+    for filename in filenames:
+        file_url = os.path.join(base_url, model_size, filename)
+        file_path = os.path.join(model_dir, filename)
+        download_file(file_url, file_path)
+
+
+    # Load settings and params
+    tf_ckpt_path = tf.train.latest_checkpoint(model_dir)
+    settings = json.load(open(os.path.join(model_dir, "hparams.json")))
+    params = load_gpt2_params_from_tf_ckpt(tf_ckpt_path, settings)
+
+    return settings, params
+
+def download_file(url, destination):
+    try:
+        response = requests.get(url, stream=True, verify=False)
+
+        file_size = int(response.headers.get("content-length", 0))
+
+        if os.path.exists(destination):
+            file_size_local = os.path.getsize(destination)
+            if file_size == file_size_local:
+                print(f"File already exists and is up-to-date: {destination}")
+                return
+
+        block_size = 1024
+
+        progress_bar_description = url.split("/")[-1]
+        with tqdm(total=file_size, unit="iB", unit_scale=True, desc=progress_bar_description) as progress_bar:
+            with open(destination, "wb") as file:
+                for chunk in response.iter_content(block_size):
+                    progress_bar.update(len(chunk))
+                    file.write(chunk)
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading the file: {e}")
+        print(f"Please check the URL: {url}")
+
+def load_gpt2_params_from_tf_ckpt(ckpt_path, settings):
+    params = {"blocks": [{} for _ in range(settings["n_layer"])]}
+
+    for name, _ in tf.train.list_variables(ckpt_path):
+        variable_array = np.squeeze(tf.train.load_variable(ckpt_path, name))
+
+        variable_name_parts = name.split("/")[1:]
+
+        target_dict = params
+        if variable_name_parts[0].startswith("h"):
+            layer_number = int(variable_name_parts[0][1:])
+            target_dict = params["blocks"][layer_number]
+
+        for key in variable_name_parts[1:-1]:
+            target_dict = target_dict.setdefault(key, {})
+
+        last_key = variable_name_parts[-1]
+        target_dict[last_key] = variable_array
+
+    return params
+
+
+def get_weight_file(cfg, epoch):
+    weight_folder = cfg["weight_folder"]
+    weight_basename = cfg["weight_basename"]
+    weight_filename = f"{weight_basename}{epoch}.pt"
+    return str(Path(".")/weight_folder/weight_filename)
+
+
+# def generate(model, ids,  cfg, device, max_new_tokens, temperature=0.0, top_k=None, eos=50256):
+#     model.eval()
+
+#     for _ in range(max_new_tokens):
+#         ids = ids.to(device)
+#         ids_cond = ids[:, -cfg["context_length"]:]
+#         with torch.inference_mode():
+#             logits = model(ids_cond)     # model output shape -> (batch, context_length, vocab_size)
+#         logits = logits[:, -1, :]
+
+#         if top_k is not None:
+#             top_logits, _ = torch.topk(logits, top_k)
+#             min_val = top_logits[:, -1]
+#             logits = torch.where(logits < min_val, torch.tensor(float("-inf")).to(logits.device), logits)
+
+#         if temperature > 0.0:
+#             logits = logits / temperature
+#             probas = torch.softmax(logits, dim=-1)
+#             idx_next = torch.multinomial(probas, num_samples=1)
+#         else:
+#             idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+
+#         if eos is not None:
+#             if(idx_next == eos).all():
+#                 break
+
+#         ids = torch.cat((ids, idx_next), dim=-1)
+
+#     return ids
+
+
+def generate(model, ids,  cfg, device, tokenizer, max_new_tokens, temperature=0.0, top_k=None, eos=50256):
     model.eval()
-    with torch.no_grad():
-        train_loss = loader_loss(train_loader, model, device, num_batch=eval_iter)
-        val_loss = loader_loss(val_loader, model, device, num_batch=eval_iter)
-    model.train()
-    return train_loss, val_loss
-
-def text_to_token_ids(txt, tokenizer):
-    token_ids = tokenizer.encode(txt, allowed_special={"<|endoftext|>"})
-    token_ids_tensor = torch.tensor(token_ids).unsqueeze(0)
-    return token_ids_tensor
-
-def token_ids_to_text(ids, tokenizer):
-    text = ids.squeeze(0)
-    return tokenizer.decode(text.tolist())
-
-
-def generate_and_print_sample(model, tokenizer, device, start_context, cfg):
-    model.eval()
-    context_size = model.pos_embedding.weight.shape[0]
-    encoded = text_to_token_ids(start_context, tokenizer).to(device)
-    with torch.no_grad():
-        token_ids = generate(model=model, idx=encoded, max_new_tokens=cfg["max_new_tokens"], context_size=context_size)
-        decoded_text = token_ids_to_text(token_ids, tokenizer)
-        print(decoded_text.replace("\n", " "))
-        model.train()
-
-
-def generate(model, idx, max_new_tokens, context_size, temperature=0.0, top_k=None, eos_id=None):
 
     for _ in range(max_new_tokens):
-        idx_cond = idx[:, -context_size:]
-        with torch.no_grad():
-            logits = model(idx_cond)
+        ids = ids.to(device)
+        ids_cond = ids[:, -cfg["context_length"]:]
+        with torch.inference_mode():
+            logits = model(ids_cond)     # model output shape -> (batch, context_length, vocab_size)
         logits = logits[:, -1, :]
 
         if top_k is not None:
-            top_logits, top_pos = torch.topk(logits, top_k)
+            top_logits, _ = torch.topk(logits, top_k)
             min_val = top_logits[:, -1]
             logits = torch.where(logits < min_val, torch.tensor(float("-inf")).to(logits.device), logits)
 
         if temperature > 0.0:
             logits = logits / temperature
-
-            probas = torch.softmax(logits, dim=-1)   # (batch, context_length)
-
-            idx_next = torch.multinomial(probas, num_samples=1)  # (batch_size, 1)
-
+            probas = torch.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probas, num_samples=1)
         else:
             idx_next = torch.argmax(logits, dim=-1, keepdim=True)
 
-        # if idx_next == eos_id:
-        #     break
-        if eos_id is not None and (idx_next == eos_id).any():
-            break
+        if eos is not None:
+            if(idx_next == eos).all():
+                break
 
-        idx = torch.cat((idx, idx_next), dim=1)  # (batch_size, num_tokens+1)
+        ids = torch.cat((ids, idx_next), dim=-1)
 
-    return idx
+        yield tokenizer.decode(idx_next[0].tolist())
 
-def get_weights_file_path(cfg, epoch: str):
-    weight_folder = cfg["weight_folder"]
-    weight_basename = cfg["weight_basename"]
-    weight_filename = f"{weight_basename}{epoch}.pt"
-    return str(Path(".")/weight_folder/weight_filename)
+    # return ids

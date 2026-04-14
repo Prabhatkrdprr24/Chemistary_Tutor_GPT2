@@ -1,17 +1,52 @@
 
 
+# cfg = {
+#     "emb_dim": 1600,
+#     "vocab_size": 50257,
+#     "qkv_bias": True,
+#     "n_heads": 25,
+#     "context_length": 1024,
+#     "dropout": 0.1,
+#     "n_layers": 48,
+#     "preload": None,
+#     "weight_folder": "weights",
+#     "weight_basename": "_tmodel",
+#     "weight_decay": 0.1,
+#     "learning_rate": 5e-5,
+#     "epochs": 5,
+#     "eval_freq": 20,
+#     "eval_iter": 10,
+#     "num_classes": 2,
+#     "batch_size": 15,
+#     "num_workers": 0,
+#     "max_new_tokens": 100,
+    
+
+# }
+
+
+
+
 cfg = {
-    "vocab_size": 50256,
-    "n_layers": 12,
-    "stride" : 1024,
-    "context_length" : 1024,
-    "emb_dim": 512,
-    "n_heads": 8,
-    "dropout" : 0.1,
-    "learning_rate": 0.0004,
-    "qkv_bias": False,
-    "max_new_tokens": 50,
-    "eval_iter": 5,
-    "eval_freq": 5,
-    "num_epochs": 3
+    "emb_dim": 1024,
+    "vocab_size": 50257,
+    "qkv_bias": True,
+    "n_heads": 16,
+    "context_length": 1024,
+    "dropout": 0.1,
+    "n_layers": 24,
+    "preload": 2,
+    "weight_folder": "weights",
+    "weight_basename": "_tmodel",
+    "weight_decay": 0.1,
+    "learning_rate": 5e-5,
+    "epochs": 5,
+    "eval_freq": 50,
+    "eval_iter": 10,
+    "num_classes": 2,
+    "batch_size": 1,
+    "num_workers": 0,
+    "max_new_tokens": 200,
+    
+
 }
