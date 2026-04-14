@@ -13,8 +13,8 @@ from dataset import format_input, train_loader, val_loader, val_data, format_for
 model = Model(cfg)
 
 settings, params = download_and_load_gpt2(
-    model_size="1558M",
-    models_dir="gpt2-1558M"
+    model_size="335M",
+    models_dir="gpt2-335M"
 )
 
 load_weights_into_gpt(model, params)

@@ -1,4 +1,4 @@
-# GPT-163M-params
+# GPT-335M-params
 
 A minimal GPT-2 style transformer language model in PyTorch.
 
